@@ -174,20 +174,20 @@ INSERT INTO dataset (dataset_name, dataset_description) VALUES
 
 -- dataset_database
 INSERT INTO dataset_database (dataset_id, database_name, connection_type, secret_key_name) VALUES
-(1, 'media_db', 'rds_mysql', 'media-secret');
+(1, 'media_db', 'rds_mysql', 'media-mysql-secret');
 
 -- dataset_schema
 INSERT INTO dataset_schema (database_id, schema_name) VALUES
 (1, 'media_db');
 
--- dataset_entity — source tables (MySQL) and destination (LandingZone)
--- source: no s3 details needed (MySQL is the source)
--- dest:   LandingZone S3 bucket and prefix
-INSERT INTO dataset_entity (schema_id, entity_name, entity_description, s3_bucket, s3_prefix, ingestion_layer) VALUES
-(1, 'media_content', 'MySQL source - media_content',        NULL,                                  NULL),
-(1, 'media_reviews', 'MySQL source - media_reviews',        NULL,                                  NULL),
-(1, 'media_content', 'LandingZone dest - media_content',    'aps-group-rawzone-bucket', 'media/media_db/media_content'),
-(1, 'media_reviews', 'LandingZone dest - media_reviews',    'aps-group-rawzone-bucket', 'media/media_db/media_reviews');
+-- dataset_entity — source tables (MySQL): no S3 details needed
+-- dataset_entity — dest tables: only s3_bucket + s3_prefix = 'source/'
+--   full path is built dynamically in SP as: source/<dataset>/<schema>/<entity>
+INSERT INTO dataset_entity (schema_id, entity_name, entity_description, s3_bucket, s3_prefix) VALUES
+(1, 'media_content', 'MySQL source - media_content',     NULL,                       NULL),
+(1, 'media_reviews', 'MySQL source - media_reviews',     NULL,                       NULL),
+(1, 'media_content', 'LandingZone dest - media_content', 'aps-group-rawzone-bucket', 'source/'),
+(1, 'media_reviews', 'LandingZone dest - media_reviews', 'aps-group-rawzone-bucket', 'source/');
 
 -- job
 INSERT INTO job (job_name, job_description) VALUES

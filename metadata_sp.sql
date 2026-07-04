@@ -34,10 +34,11 @@ WHERE job_step_id = 1;
 --
 -- Returns columns:
 --   mapping_id
+--   dataset_name            (dataset name, used to build S3 prefix in Python)
 --   source_schema_name      (schema of the MySQL source table)
 --   source_entity_name      (MySQL table name)
 --   dest_s3_bucket          (S3 bucket to write Parquet)
---   dest_s3_prefix          (S3 prefix/path)
+--   dest_s3_prefix          (base prefix, e.g. 'source/')
 --   source_secret_key_name  (Secrets Manager key for source MySQL)
 --   source_database_name    (MySQL database name)
 --   glue_database_name      (Glue/Athena database name)
@@ -52,12 +53,13 @@ CREATE PROCEDURE sp_get_job_step_mappings(IN p_job_name VARCHAR(200))
 BEGIN
     SELECT
         m.mapping_id,
-        src_schema.schema_name          AS source_schema_name,
-        src_entity.entity_name          AS source_entity_name,
-        dest_entity.s3_bucket           AS dest_s3_bucket,
-        dest_entity.s3_prefix           AS dest_s3_prefix,
-        db.secret_key_name              AS source_secret_key_name,
-        db.database_name                AS source_database_name,
+        d.dataset_name,
+        src_schema.schema_name                                          AS source_schema_name,
+        src_entity.entity_name                                          AS source_entity_name,
+        dest_entity.s3_bucket                                           AS dest_s3_bucket,
+        dest_entity.s3_prefix                                           AS dest_s3_prefix,
+        db.secret_key_name                                              AS source_secret_key_name,
+        db.database_name                                                AS source_database_name,
         js.glue_database_name,
         js.crawler_name,
         js.run_crawler
@@ -67,6 +69,7 @@ BEGIN
     JOIN dataset_entity                 src_entity  ON src_entity.entity_id  = m.source_entity_id
     JOIN dataset_schema                 src_schema  ON src_schema.schema_id  = src_entity.schema_id
     JOIN dataset_database               db          ON db.database_id        = src_schema.database_id
+    JOIN dataset                        d           ON d.dataset_id          = db.dataset_id
     JOIN dataset_entity                 dest_entity ON dest_entity.entity_id = m.dest_entity_id
     WHERE j.job_name    = p_job_name
       AND j.is_active   = 1
