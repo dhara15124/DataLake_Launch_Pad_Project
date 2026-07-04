@@ -1,0 +1,237 @@
+"""
+media_ingestion_job.py
+
+AWS Glue Job Entry Point.
+
+Flow:
+  1. Receive job_name from Glue trigger argument
+  2. Connect to datalake_metadata MySQL (via Secrets Manager)
+  3. Call sp_get_job_step_mappings(job_name) to get all source→dest mappings
+  4. For each mapping: connect to source MySQL, extract table, write S3 Parquet
+  5. Run Glue crawler to create/update Athena table
+"""
+
+import sys
+import json
+import logging
+import traceback
+import time
+import boto3
+import pymysql
+import pandas as pd
+import awswrangler as wr
+from datetime import datetime
+from sqlalchemy import create_engine, text
+from awsglue.utils import getResolvedOptions
+
+
+# -------------------------------------------------------
+# Logging setup
+# -------------------------------------------------------
+logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+logger = logging.getLogger("media_ingestion_job")
+logger.setLevel(logging.INFO)
+
+
+# -------------------------------------------------------
+# 1. Get secret from Secrets Manager
+# -------------------------------------------------------
+def get_secret(secret_client, secret_name: str) -> dict:
+    response = secret_client.get_secret_value(SecretId=secret_name)
+    return json.loads(response["SecretString"])
+
+
+# -------------------------------------------------------
+# 2. Connect to datalake_metadata MySQL
+# -------------------------------------------------------
+def get_metadata_connection(secret_client, metadata_secret_name: str):
+    creds = get_secret(secret_client, metadata_secret_name)
+    return pymysql.connect(
+        host=creds["host"],
+        port=int(creds["port"]),
+        user=creds["username"],
+        password=creds["password"],
+        database="datalake_metadata"
+    )
+
+
+# -------------------------------------------------------
+# 3. Fetch job step mappings from metadata SP
+#    Returns list of rows:
+#    (mapping_id, dataset_name, source_schema, source_entity,
+#     dest_s3_bucket, dest_s3_prefix,
+#     source_secret_key_name, source_database_name,
+#     glue_database_name, crawler_name, run_crawler)
+# -------------------------------------------------------
+def get_job_step_mappings(metadata_conn, job_name: str) -> list:
+    cursor = metadata_conn.cursor()
+    cursor.callproc("sp_get_job_step_mappings", [job_name])
+    rows = cursor.fetchall()
+    cursor.close()
+    return rows
+
+
+# -------------------------------------------------------
+# 4. Create SQLAlchemy engine for source MySQL
+# -------------------------------------------------------
+def create_source_engine(secret_client, secret_name: str, database_name: str):
+    creds = get_secret(secret_client, secret_name)
+    conn_str = "mysql+pymysql://{user}:{password}@{host}:{port}/{dbname}".format(
+        user=creds["username"],
+        password=creds["password"],
+        host=creds["host"],
+        port=int(creds["port"]),
+        dbname=database_name
+    )
+    return create_engine(conn_str)
+
+
+# -------------------------------------------------------
+# 5. Extract table from MySQL and write to S3 as Parquet
+# -------------------------------------------------------
+def extract_and_load(engine, schema_name: str, table_name: str, s3_path: str, logger) -> int:
+    query = "SELECT * FROM `{schema}`.`{table}`".format(schema=schema_name, table=table_name)
+    logger.info("Query: {}".format(query))
+
+    with engine.connect() as conn:
+        df = pd.read_sql(text(query), conn)
+
+    df.columns = [c.lower() for c in df.columns]
+    row_count = len(df)
+    logger.info("Extracted {} rows from {}.{}".format(row_count, schema_name, table_name))
+
+    filename_prefix = datetime.now().strftime("%Y%m%d_%H%M%S_") + schema_name + "_" + table_name + "_"
+    wr.s3.to_parquet(df=df, path=s3_path, index=False, dataset=True, filename_prefix=filename_prefix)
+    logger.info("Written Parquet to: {}".format(s3_path))
+    return row_count
+
+
+# -------------------------------------------------------
+# 6. Create and run Glue crawler → creates Athena table
+# -------------------------------------------------------
+def run_crawler(glue_client, crawler_name: str, glue_database: str, s3_path: str, crawler_role: str, logger):
+    # Delete existing crawler if present
+    try:
+        glue_client.delete_crawler(Name=crawler_name)
+        logger.info("Deleted existing crawler: {}".format(crawler_name))
+        time.sleep(5)
+    except glue_client.exceptions.EntityNotFoundException:
+        pass
+
+    # Create crawler
+    glue_client.create_crawler(
+        Name=crawler_name,
+        Role=crawler_role,
+        DatabaseName=glue_database,
+        Targets={"S3Targets": [{"Path": s3_path}]},
+        SchemaChangePolicy={
+            "UpdateBehavior": "UPDATE_IN_DATABASE",
+            "DeleteBehavior": "DEPRECATE_IN_DATABASE"
+        }
+    )
+    logger.info("Created crawler: {}".format(crawler_name))
+
+    # Start crawler and wait
+    glue_client.start_crawler(Name=crawler_name)
+    logger.info("Started crawler: {}".format(crawler_name))
+
+    while True:
+        response = glue_client.get_crawler(Name=crawler_name)
+        state = response["Crawler"]["State"]
+        if state == "READY":
+            logger.info("Crawler completed: {}".format(crawler_name))
+            break
+        elif state in ["RUNNING", "STOPPING", "STARTING"]:
+            logger.info("Crawler state: {} — waiting...".format(state))
+            time.sleep(30)
+        else:
+            raise Exception("Crawler failed with state: {}".format(state))
+
+
+# -------------------------------------------------------
+# 7. Main
+# -------------------------------------------------------
+def main():
+    args = getResolvedOptions(sys.argv, [
+        "job_name",
+        "metadata_secret_name",
+        "crawler_role",
+        "region"
+    ])
+
+    job_name            = args["job_name"]
+    metadata_secret     = args["metadata_secret_name"]
+    crawler_role        = args["crawler_role"]
+    region              = args["region"]
+
+    secret_client = boto3.client("secretsmanager", region_name=region)
+    glue_client   = boto3.client("glue",           region_name=region)
+
+    logger.info("Job started: {}".format(job_name))
+
+    # Connect to metadata DB
+    metadata_conn = get_metadata_connection(secret_client, metadata_secret)
+
+    # Get all source→dest mappings for this job
+    mappings = get_job_step_mappings(metadata_conn, job_name)
+    if not mappings:
+        raise Exception("No active mappings found for job: {}".format(job_name))
+
+    logger.info("Found {} mapping(s) for job: {}".format(len(mappings), job_name))
+
+    failed = []
+
+    for row in mappings:
+        (
+            mapping_id,
+            dataset_name,
+            source_schema_name,
+            source_entity_name,
+            dest_s3_bucket,
+            dest_s3_prefix,
+            source_secret_key_name,
+            source_database_name,
+            glue_database_name,
+            crawler_name,
+            run_crawler_flag
+        ) = row
+
+        full_prefix = "{base}{dataset}/{schema}/{entity}".format(
+            base=dest_s3_prefix.rstrip("/") + "/",
+            dataset=dataset_name,
+            schema=source_schema_name,
+            entity=source_entity_name
+        )
+        s3_path = "s3://{bucket}/{prefix}/".format(
+            bucket=dest_s3_bucket,
+            prefix=full_prefix.strip("/")
+        )
+
+        try:
+            logger.info("Processing: {}.{}".format(source_schema_name, source_entity_name))
+
+            # Connect to source MySQL and extract
+            engine = create_source_engine(secret_client, source_secret_key_name, source_database_name)
+            row_count = extract_and_load(engine, source_schema_name, source_entity_name, s3_path, logger)
+
+            logger.info("Completed {}.{} | Rows: {}".format(source_schema_name, source_entity_name, row_count))
+
+            # Run crawler if flagged
+            if run_crawler_flag == 1:
+                run_crawler(glue_client, crawler_name, glue_database_name, s3_path, crawler_role, logger)
+
+        except Exception:
+            error = str(traceback.format_exc())
+            logger.error("Failed {}.{}: {}".format(source_schema_name, source_entity_name, error))
+            failed.append("{}.{}".format(source_schema_name, source_entity_name))
+
+    metadata_conn.close()
+
+    if failed:
+        raise Exception("Job completed with failures: {}".format(", ".join(failed)))
+
+    logger.info("Job completed successfully: {}".format(job_name))
+
+
+if __name__ == "__main__":
+    main()
