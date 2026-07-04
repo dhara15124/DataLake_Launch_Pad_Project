@@ -15,7 +15,7 @@
 
 # ------------------------------------------------------------
 # SECRET 1: Metadata Database
-# Secret Name : media-metadata-secret
+# Secret Name : metadata
 # Used by     : --metadata_secret_name in Glue job
 # Connects to : datalake_metadata MySQL RDS
 # ------------------------------------------------------------
@@ -31,7 +31,7 @@
 
 # ------------------------------------------------------------
 # SECRET 2: Source Database
-# Secret Name : media-mysql-secret
+# Secret Name : media-secret
 # Used by     : dataset_database.secret_key_name in metadata
 # Connects to : media_db MySQL RDS (source data)
 # ------------------------------------------------------------
