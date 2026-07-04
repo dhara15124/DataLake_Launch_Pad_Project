@@ -38,45 +38,14 @@ Resources:
                   - !Sub 'arn:aws:s3:::${SourceBucket}/*'
                   - !Sub 'arn:aws:s3:::${TargetBucket}/*'
 
-  GlueJob:
+  IngestionJob:
     Type: AWS::Glue::Job
     Properties:
       Name: !Sub '${AWS::StackName}-glue-job'
       Role: !GetAtt GlueJobRole.Arn
       Command:
         Name: glueetl
-        ScriptLocation: !Sub 's3://${SourceBucket}/scripts/job.py'
-        PythonVersion: '3'
-      GlueVersion: '4.0'
-      NumberOfWorkers: 2
-      WorkerType: G.1X
-
-  OnDemandTrigger:
-    Type: AWS::Glue::Trigger
-    Properties:
-      Name: !Sub '${AWS::StackName}-ondemand-trigger'
-      Type: ON_DEMAND
-      Actions:
-        - JobName: !Ref GlueJob
-
-  ScheduledTrigger:
-    Type: AWS::Glue::Trigger
-    Properties:
-      Name: !Sub '${AWS::StackName}-scheduled-trigger'
-      Type: SCHEDULED
-      Schedule: 'cron(0 8 * * ? *)'
-      StartOnCreation: true
-      Actions:
-        - JobName: !Ref GlueJob
-
-  MediaIngestionJob:
-    Type: AWS::Glue::Job
-    Properties:
-      Name: Media MySQL Ingestion Job
-      Role: !GetAtt GlueJobRole.Arn
-      Command:
-        Name: glueetl
-        ScriptLocation: s3://aps-group-rawzone-bucket/scripts/media_ingestion_job.py
+        ScriptLocation: !Sub s3://${SourceBucket}/gluejob/ingestion.py
         PythonVersion: '3'
       GlueVersion: '4.0'
       NumberOfWorkers: 2
@@ -94,7 +63,12 @@ Resources:
       Name: media-ingestion-ondemand-trigger
       Type: ON_DEMAND
       Actions:
-        - JobName: !Ref MediaIngestionJob
+        - JobName: !Ref IngestionJob
+          Arguments:
+            '--job_name': 'Media MySQL Ingestion Job'
+            '--metadata_secret_name': 'metadata'
+            '--crawler_role': !GetAtt GlueJobRole.Arn
+            '--region': !Ref AWS::Region
 
   MediaIngestionScheduledTrigger:
     Type: AWS::Glue::Trigger
@@ -104,9 +78,9 @@ Resources:
       Schedule: 'cron(0 2 * * ? *)'
       StartOnCreation: true
       Actions:
-        - JobName: !Ref MediaIngestionJob
+        - JobName: !Ref IngestionJob
           Arguments:
             '--job_name': 'Media MySQL Ingestion Job'
-            '--metadata_secret_name': 'media-metadata-secret'
+            '--metadata_secret_name': 'metadata'
             '--crawler_role': !GetAtt GlueJobRole.Arn
             '--region': !Ref AWS::Region
