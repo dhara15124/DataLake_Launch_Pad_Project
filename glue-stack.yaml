@@ -1,0 +1,112 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Resources:
+
+  SourceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-source-bucket'
+
+  TargetBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-target-bucket'
+
+  GlueJobRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-glue-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${SourceBucket}/*'
+                  - !Sub 'arn:aws:s3:::${TargetBucket}/*'
+
+  GlueJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: !Sub '${AWS::StackName}-glue-job'
+      Role: !GetAtt GlueJobRole.Arn
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub 's3://${SourceBucket}/scripts/job.py'
+        PythonVersion: '3'
+      GlueVersion: '4.0'
+      NumberOfWorkers: 2
+      WorkerType: G.1X
+
+  OnDemandTrigger:
+    Type: AWS::Glue::Trigger
+    Properties:
+      Name: !Sub '${AWS::StackName}-ondemand-trigger'
+      Type: ON_DEMAND
+      Actions:
+        - JobName: !Ref GlueJob
+
+  ScheduledTrigger:
+    Type: AWS::Glue::Trigger
+    Properties:
+      Name: !Sub '${AWS::StackName}-scheduled-trigger'
+      Type: SCHEDULED
+      Schedule: 'cron(0 8 * * ? *)'
+      StartOnCreation: true
+      Actions:
+        - JobName: !Ref GlueJob
+
+  MediaIngestionJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: Media MySQL Ingestion Job
+      Role: !GetAtt GlueJobRole.Arn
+      Command:
+        Name: glueetl
+        ScriptLocation: s3://aps-group-rawzone-bucket/scripts/media_ingestion_job.py
+        PythonVersion: '3'
+      GlueVersion: '4.0'
+      NumberOfWorkers: 2
+      WorkerType: G.1X
+      DefaultArguments:
+        '--job_name': 'Media MySQL Ingestion Job'
+        '--metadata_secret_name': 'media-metadata-secret'
+        '--crawler_role': !GetAtt GlueJobRole.Arn
+        '--region': !Ref AWS::Region
+        '--extra-py-files': s3://aps-group-rawzone-bucket/scripts/modules.zip
+
+  MediaIngestionOnDemandTrigger:
+    Type: AWS::Glue::Trigger
+    Properties:
+      Name: media-ingestion-ondemand-trigger
+      Type: ON_DEMAND
+      Actions:
+        - JobName: !Ref MediaIngestionJob
+
+  MediaIngestionScheduledTrigger:
+    Type: AWS::Glue::Trigger
+    Properties:
+      Name: media-ingestion-scheduled-trigger
+      Type: SCHEDULED
+      Schedule: 'cron(0 2 * * ? *)'
+      StartOnCreation: true
+      Actions:
+        - JobName: !Ref MediaIngestionJob
+          Arguments:
+            '--job_name': 'Media MySQL Ingestion Job'
+            '--metadata_secret_name': 'media-metadata-secret'
+            '--crawler_role': !GetAtt GlueJobRole.Arn
+            '--region': !Ref AWS::Region
