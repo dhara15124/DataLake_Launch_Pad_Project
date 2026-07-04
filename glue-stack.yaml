@@ -1,16 +1,10 @@
 AWSTemplateFormatVersion: '2010-09-09'
 
 Resources:
-
-  SourceBucket:
+  RawzoneBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub '${AWS::StackName}-source-bucket'
-
-  TargetBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Sub '${AWS::StackName}-target-bucket'
+      BucketName: !Sub '${AWS::StackName}-rawzone-bucket'
 
   GlueJobRole:
     Type: AWS::IAM::Role
