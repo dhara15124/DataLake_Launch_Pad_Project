@@ -174,7 +174,7 @@ INSERT INTO dataset (dataset_name, dataset_description) VALUES
 
 -- dataset_database
 INSERT INTO dataset_database (dataset_id, database_name, connection_type, secret_key_name) VALUES
-(1, 'media_db', 'rds_mysql', 'media-mysql-secret');
+(1, 'media_db', 'rds_mysql', 'media-secret');
 
 -- dataset_schema
 INSERT INTO dataset_schema (database_id, schema_name) VALUES
