@@ -68,3 +68,57 @@ Resources:
             '--metadata_secret_name': 'metadata'
             '--crawler_role': !GetAtt GlueJobRole.Arn
             '--region': !Ref AWS::Region
+  GenerateMetadataInsertsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-generate-metadata-inserts'
+      Description: Generates metadata INSERT SQL statements from dataset/table inputs
+      Runtime: python3.12
+      Handler: generate_metadata_inserts.lambda_handler
+      Role: !GetAtt GlueJobRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Code:
+        S3Bucket: !Sub '${AWS::StackName}-source-bucket'
+        S3Key: scripts/generate_metadata_inserts.zip
+
+  GenerateMetadataInsertsFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${GenerateMetadataInsertsFunction}'
+      RetentionInDays: 30
+
+  # EventBridge rule: fires when a file is placed under inputs/ in aps-group-cfn-bucket
+  # Requires EventBridge notifications to be enabled on the bucket:
+  #   aws s3api put-bucket-notification-configuration \
+  #     --bucket aps-group-cfn-bucket \
+  #     --notification-configuration '{"EventBridgeConfiguration": {}}'
+  MetadataInputS3EventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${AWS::StackName}-metadata-input-s3-rule'
+      Description: Triggers GenerateMetadataInsertsFunction when a file lands in s3://aps-group-cfn-bucket/inputs/
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - Object Created
+        detail:
+          bucket:
+            name:
+              - aps-group-cfn-bucket
+          object:
+            key:
+              - prefix: inputs/
+      State: ENABLED
+      Targets:
+        - Id: GenerateMetadataInsertsFunctionTarget
+          Arn: !GetAtt GenerateMetadataInsertsFunction.Arn
+
+  GenerateMetadataInsertsLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt GenerateMetadataInsertsFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt MetadataInputS3EventRule.Arn
