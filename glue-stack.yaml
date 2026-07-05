@@ -130,6 +130,10 @@ Resources:
       MemorySize: 128
       Layers: 
         - !Ref PyMySQLLayer
+      VpcConfig:
+       SecurityGroupIds:
+        - !GetAtt LambdaSecurityGroup.GroupId
+       SubnetIds: !Ref LambdaSubnetIds
       Code:
         S3Bucket: aps-group-cfn-bucket
         S3Key: scripts/generate_metadata_inserts.zip
