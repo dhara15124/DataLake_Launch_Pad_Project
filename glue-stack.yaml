@@ -69,8 +69,8 @@ Resources:
             '--crawler_role': !GetAtt GlueJobRole.Arn
             '--region': !Ref AWS::Region
   GenerateMetadataInsertsRole:
-  Type: AWS::IAM::Role
-  Properties:
+   Type: AWS::IAM::Role
+   Properties:
     RoleName: !Sub "${AWS::StackName}-generate-metadata-role"
     AssumeRolePolicyDocument:
       Version: "2012-10-17"
@@ -89,7 +89,7 @@ Resources:
       Description: Generates metadata INSERT SQL statements from dataset/table inputs
       Runtime: python3.12
       Handler: generate_metadata_inserts.lambda_handler
-      Role: !GetAtt GlueJobRole.Arn
+      Role: !GetAtt GenerateMetadataInsertsRole.Arn
       Timeout: 30
       MemorySize: 128
       Code:
