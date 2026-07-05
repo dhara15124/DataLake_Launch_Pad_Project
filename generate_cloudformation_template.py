@@ -8,26 +8,47 @@ saves it to aps-group-cfn-bucket/cloudformation/, and deploys it via CloudFormat
 
 import json
 import re
-import boto3
+import logging
 import urllib.parse
+import boto3
+from botocore.exceptions import ClientError
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 CFN_BUCKET      = "aps-group-cfn-bucket"
 CFN_PREFIX      = "cloudformation"
 GLUE_SCRIPT_LOC = "s3://aps-group-rawzone-bucket/scripts/ingestion.py"
-GLUE_ROLE_ARN   = "arn:aws:iam::{}:role/{}-glue-role"
+GLUE_ROLE_ARN   = "arn:aws:iam::216812304371:role/ingestion-glue-role"
+
+# reuse clients across invocations
+s3_client  = boto3.client("s3")
+cfn_client = boto3.client("cloudformation")
+
+
+def sanitize(value: str) -> str:
+    """Allow only alphanumeric, spaces, hyphens, underscores."""
+    return re.sub(r"[^\w\s\-]", "", value).strip()
 
 
 def parse_sql(sql: str) -> dict:
     dataset_match = re.search(r"INSERT INTO dataset.*?VALUES\s*\(\s*'([^']+)'", sql, re.DOTALL)
     job_match     = re.search(r"INSERT INTO job.*?VALUES\s*\(\s*'([^']+)'", sql, re.DOTALL)
 
-    dataset_name = dataset_match.group(1) if dataset_match else "unknown"
-    job_name     = job_match.group(1)     if job_match     else f"{dataset_name.title()} MySQL Ingestion Job"
+    if not dataset_match:
+        raise ValueError("Could not parse dataset_name from SQL")
+    if not job_match:
+        raise ValueError("Could not parse job_name from SQL")
 
+    dataset_name = sanitize(dataset_match.group(1))
+    job_name     = sanitize(job_match.group(1))
+
+    logger.info("Parsed dataset_name='%s', job_name='%s'", dataset_name, job_name)
     return {"dataset_name": dataset_name, "job_name": job_name}
 
 
-def build_template(dataset_name: str, job_name: str, glue_role_arn: str) -> dict:
+def build_template(dataset_name: str, job_name: str) -> dict:
+    logger.info("Building CloudFormation template for dataset '%s'", dataset_name)
     return {
         "AWSTemplateFormatVersion": "2010-09-09",
         "Description": f"Glue job and triggers for {dataset_name}",
@@ -36,7 +57,7 @@ def build_template(dataset_name: str, job_name: str, glue_role_arn: str) -> dict
                 "Type": "AWS::Glue::Job",
                 "Properties": {
                     "Name": job_name,
-                    "Role": glue_role_arn,
+                    "Role": GLUE_ROLE_ARN,
                     "Command": {
                         "Name": "glueetl",
                         "ScriptLocation": GLUE_SCRIPT_LOC,
@@ -85,66 +106,93 @@ def build_template(dataset_name: str, job_name: str, glue_role_arn: str) -> dict
 
 
 def save_template_to_s3(template: dict, dataset_name: str) -> str:
-    s3  = boto3.client("s3")
     key = f"{CFN_PREFIX}/{dataset_name}-stack.json"
-    s3.put_object(
-        Bucket=CFN_BUCKET,
-        Key=key,
-        Body=json.dumps(template, indent=2).encode("utf-8"),
-        ContentType="application/json"
-    )
+    try:
+        s3_client.put_object(
+            Bucket=CFN_BUCKET,
+            Key=key,
+            Body=json.dumps(template, indent=2).encode("utf-8"),
+            ContentType="application/json"
+        )
+        logger.info("Template saved to s3://%s/%s", CFN_BUCKET, key)
+    except ClientError as e:
+        logger.error("Failed to save template to S3: %s", e)
+        raise
     return key
 
 
-def deploy_stack(template: dict, dataset_name: str, template_s3_key: str):
-    cfn        = boto3.client("cloudformation")
-    stack_name = f"{dataset_name}-ingestion-stack"
+def deploy_stack(dataset_name: str, template_s3_key: str):
+    stack_name   = f"{dataset_name}-ingestion-stack"
     template_url = f"https://{CFN_BUCKET}.s3.amazonaws.com/{template_s3_key}"
 
-    existing_stacks = cfn.list_stacks(
-        StackStatusFilter=["CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE"]
-    )
-    stack_names = [s["StackName"] for s in existing_stacks["StackSummaries"]]
+    try:
+        existing = cfn_client.list_stacks(
+            StackStatusFilter=["CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE"]
+        )
+        stack_names = [s["StackName"] for s in existing["StackSummaries"]]
 
-    if stack_name in stack_names:
-        cfn.update_stack(
-            StackName=stack_name,
-            TemplateURL=template_url,
-            Capabilities=["CAPABILITY_NAMED_IAM"]
-        )
-    else:
-        cfn.create_stack(
-            StackName=stack_name,
-            TemplateURL=template_url,
-            Capabilities=["CAPABILITY_NAMED_IAM"],
-            OnFailure="ROLLBACK"
-        )
+        if stack_name in stack_names:
+            logger.info("Updating existing stack '%s'", stack_name)
+            cfn_client.update_stack(
+                StackName=stack_name,
+                TemplateURL=template_url,
+                Capabilities=["CAPABILITY_NAMED_IAM"]
+            )
+        else:
+            logger.info("Creating new stack '%s'", stack_name)
+            cfn_client.create_stack(
+                StackName=stack_name,
+                TemplateURL=template_url,
+                Capabilities=["CAPABILITY_NAMED_IAM"],
+                OnFailure="ROLLBACK"
+            )
+        logger.info("Stack operation initiated for '%s'", stack_name)
+    except ClientError as e:
+        error_code = e.response["Error"]["Code"]
+        if error_code == "ValidationError" and "No updates are to be performed" in str(e):
+            logger.info("Stack '%s' is already up to date, no changes needed", stack_name)
+        else:
+            logger.error("CloudFormation stack operation failed for '%s': %s", stack_name, e)
+            raise
 
 
 def lambda_handler(event, context):
-    s3 = boto3.client("s3")
-    record = event["Records"][0]
-    bucket = record["s3"]["bucket"]["name"]
-    key = urllib.parse.unquote_plus(record["s3"]["object"]["key"],encoding="utf-8")
+    logger.info("Event received: %s", json.dumps(event))
 
-    response = s3.get_object(Bucket=bucket, Key=key)
-    sql      = response["Body"].read().decode("utf-8")
+    try:
+        if "detail" in event:
+            bucket = event["detail"]["bucket"]["name"]
+            key    = event["detail"]["object"]["key"]
+        else:
+            record = event["Records"][0]
+            bucket = record["s3"]["bucket"]["name"]
+            key    = urllib.parse.unquote_plus(record["s3"]["object"]["key"], encoding="utf-8")
 
-    parsed       = parse_sql(sql)
-    dataset_name = parsed["dataset_name"]
-    job_name     = parsed["job_name"]
+        logger.info("Reading SQL from s3://%s/%s", bucket, key)
 
-    # get glue role arn from existing stack output or use a known role name
-    sts           = boto3.client("sts")
-    account_id    = sts.get_caller_identity()["Account"]
-    glue_role_arn = f"arn:aws:iam::216812304371:role/ingestion-glue-role"
+        try:
+            response = s3_client.get_object(Bucket=bucket, Key=key)
+            sql      = response["Body"].read().decode("utf-8")
+        except ClientError as e:
+            logger.error("Failed to read SQL file from S3: %s", e)
+            raise
 
-    template        = build_template(dataset_name, job_name, glue_role_arn)
-    template_s3_key = save_template_to_s3(template, dataset_name)
-    deploy_stack(template, dataset_name, template_s3_key)
+        parsed       = parse_sql(sql)
+        dataset_name = parsed["dataset_name"]
+        job_name     = parsed["job_name"]
 
-    return {
-        "statusCode": 200,
-        "message": f"Stack deployed for dataset '{dataset_name}'",
-        "template_s3_key": f"s3://{CFN_BUCKET}/{template_s3_key}"
-    }
+        template        = build_template(dataset_name, job_name)
+        template_s3_key = save_template_to_s3(template, dataset_name)
+        deploy_stack(dataset_name, template_s3_key)
+
+        result = {
+            "statusCode": 200,
+            "message": f"Stack deployed for dataset '{dataset_name}'",
+            "template_s3_key": f"s3://{CFN_BUCKET}/{template_s3_key}"
+        }
+        logger.info("Lambda completed successfully: %s", result)
+        return result
+
+    except Exception as e:
+        logger.exception("Lambda failed with unhandled exception: %s", e)
+        raise
