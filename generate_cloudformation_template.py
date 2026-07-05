@@ -11,6 +11,7 @@ import re
 import logging
 import urllib.parse
 import boto3
+import yaml
 from botocore.exceptions import ClientError
 
 logger = logging.getLogger()
@@ -106,13 +107,13 @@ def build_template(dataset_name: str, job_name: str) -> dict:
 
 
 def save_template_to_s3(template: dict, dataset_name: str) -> str:
-    key = f"{CFN_PREFIX}/{dataset_name}-stack.json"
+    key = f"{CFN_PREFIX}/{dataset_name}-stack.yaml"
     try:
         s3_client.put_object(
             Bucket=CFN_BUCKET,
             Key=key,
-            Body=json.dumps(template, indent=2).encode("utf-8"),
-            ContentType="application/json"
+            Body=yaml.dump(template, default_flow_style=False, sort_keys=False).encode("utf-8"),
+            ContentType="application/x-yaml"
         )
         logger.info("Template saved to s3://%s/%s", CFN_BUCKET, key)
     except ClientError as e:
@@ -188,7 +189,8 @@ def lambda_handler(event, context):
         result = {
             "statusCode": 200,
             "message": f"Stack deployed for dataset '{dataset_name}'",
-            "template_s3_key": f"s3://{CFN_BUCKET}/{template_s3_key}"
+            "template_s3_key": f"s3://{CFN_BUCKET}/{template_s3_key}",
+            "template_s3_url": f"https://{CFN_BUCKET}.s3.amazonaws.com/{template_s3_key}"
         }
         logger.info("Lambda completed successfully: %s", result)
         return result
