@@ -68,6 +68,20 @@ Resources:
             '--metadata_secret_name': 'metadata'
             '--crawler_role': !GetAtt GlueJobRole.Arn
             '--region': !Ref AWS::Region
+  GenerateMetadataInsertsRole:
+  Type: AWS::IAM::Role
+  Properties:
+    RoleName: !Sub "${AWS::StackName}-generate-metadata-role"
+    AssumeRolePolicyDocument:
+      Version: "2012-10-17"
+      Statement:
+        - Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: sts:AssumeRole
+    ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      - arn:aws:iam::aws:policy/AdministratorAccess
   GenerateMetadataInsertsFunction:
     Type: AWS::Lambda::Function
     Properties:
@@ -81,12 +95,6 @@ Resources:
       Code:
         S3Bucket: 'aps-group-cfn-bucket'
         S3Key: scripts/generate_metadata_inserts.zip
-
-  GenerateMetadataInsertsFunctionLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub '/aws/lambda/${GenerateMetadataInsertsFunction}'
-      RetentionInDays: 30
 
   # EventBridge rule: fires when a file is placed under inputs/ in aps-group-cfn-bucket
   # Requires EventBridge notifications to be enabled on the bucket:
