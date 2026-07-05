@@ -92,16 +92,16 @@ Resources:
       Content:
         S3Bucket: aps-group-cfn-bucket
         S3Key: layers/pymysql.zip
-    LambdaSecurityGroup:
+  LambdaSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Security group for GenerateMetadataInserts Lambda
-      VpcId: !Ref VpcId
+      VpcId: vpc-0213f2e21ba305790
       SecurityGroupEgress:
         - IpProtocol: tcp
           FromPort: 3306
           ToPort: 3306
-          DestinationSecurityGroupId: !Ref RdsSecurityGroupId
+          DestinationSecurityGroupId: sg-0e30737abf1c1929e
           Description: Allow MySQL to RDS
         - IpProtocol: tcp
           FromPort: 443
@@ -112,7 +112,7 @@ Resources:
   RdsInboundFromLambda:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
-      GroupId: !Ref RdsSecurityGroupId
+      GroupId: sg-0e30737abf1c1929e
       IpProtocol: tcp
       FromPort: 3306
       ToPort: 3306
@@ -133,7 +133,10 @@ Resources:
       VpcConfig:
        SecurityGroupIds:
         - !GetAtt LambdaSecurityGroup.GroupId
-       SubnetIds: !Ref LambdaSubnetIds
+       SubnetIds: 
+        - subnet-069d2faac0cabe50e
+        - subnet-07609559c424fd07b
+        - subnet-03ba5ce80e0053633
       Code:
         S3Bucket: aps-group-cfn-bucket
         S3Key: scripts/generate_metadata_inserts.zip
