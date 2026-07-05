@@ -9,6 +9,7 @@ saves it to aps-group-cfn-bucket/cloudformation/, and deploys it via CloudFormat
 import json
 import re
 import boto3
+import urllib.parse
 
 CFN_BUCKET      = "aps-group-cfn-bucket"
 CFN_PREFIX      = "cloudformation"
@@ -122,13 +123,9 @@ def deploy_stack(template: dict, dataset_name: str, template_s3_key: str):
 
 def lambda_handler(event, context):
     s3 = boto3.client("s3")
-
-    if "detail" in event:
-        bucket = event["detail"]["bucket"]["name"]
-        key    = event["detail"]["object"]["key"]
-    else:
-        bucket = CFN_BUCKET
-        key    = event["s3_key"]
+    record = event["Records"][0]
+    bucket = record["s3"]["bucket"]["name"]
+    key = urllib.parse.unquote_plus(record["s3"]["object"]["key"],encoding="utf-8")
 
     response = s3.get_object(Bucket=bucket, Key=key)
     sql      = response["Body"].read().decode("utf-8")
@@ -140,7 +137,7 @@ def lambda_handler(event, context):
     # get glue role arn from existing stack output or use a known role name
     sts           = boto3.client("sts")
     account_id    = sts.get_caller_identity()["Account"]
-    glue_role_arn = f"arn:aws:iam::{account_id}:role/your-stack-name-glue-role"
+    glue_role_arn = f"arn:aws:iam::216812304371:role/ingestion-glue-role"
 
     template        = build_template(dataset_name, job_name, glue_role_arn)
     template_s3_key = save_template_to_s3(template, dataset_name)
