@@ -157,34 +157,31 @@ def run_crawler(glue_client, crawler_name: str, glue_database: str, s3_path: str
     logger.info("Starting crawler process for: {}".format(crawler_name))
 
     try:
-        glue_client.delete_crawler(Name=crawler_name)
-        logger.info("Deleted existing crawler: {}".format(crawler_name))
-        time.sleep(5)
+        glue_client.get_crawler(Name=crawler_name)
+        logger.info("Crawler already exists, skipping create: {}".format(crawler_name))
     except glue_client.exceptions.EntityNotFoundException:
-        logger.info("Crawler does not exist yet, will create fresh: {}".format(crawler_name))
-    except Exception as e:
-        logger.error("Unexpected error deleting crawler '{}': {}".format(crawler_name, str(e)))
-        raise
-
-    try:
-        glue_client.create_crawler(
-            Name=crawler_name,
-            Role=crawler_role,
-            DatabaseName=glue_database,
-            Targets={"S3Targets": [{"Path": s3_path}]},
-            SchemaChangePolicy={
-                "UpdateBehavior": "UPDATE_IN_DATABASE",
-                "DeleteBehavior": "DEPRECATE_IN_DATABASE"
-            }
-        )
-        logger.info("Created crawler: {} | Database: {} | S3 Path: {}".format(crawler_name, glue_database, s3_path))
-    except Exception as e:
-        logger.error("Failed to create crawler '{}': {}".format(crawler_name, str(e)))
-        raise
+        logger.info("Crawler not found, creating: {}".format(crawler_name))
+        try:
+            glue_client.create_crawler(
+                Name=crawler_name,
+                Role=crawler_role,
+                DatabaseName=glue_database,
+                Targets={"S3Targets": [{"Path": s3_path}]},
+                SchemaChangePolicy={
+                    "UpdateBehavior": "UPDATE_IN_DATABASE",
+                    "DeleteBehavior": "DEPRECATE_IN_DATABASE"
+                }
+            )
+            logger.info("Created crawler: {} | Database: {} | S3 Path: {}".format(crawler_name, glue_database, s3_path))
+        except Exception as e:
+            logger.error("Failed to create crawler '{}': {}".format(crawler_name, str(e)))
+            raise
 
     try:
         glue_client.start_crawler(Name=crawler_name)
         logger.info("Started crawler: {}".format(crawler_name))
+    except glue_client.exceptions.CrawlerRunningException:
+        logger.info("Crawler already running: {}".format(crawler_name))
     except Exception as e:
         logger.error("Failed to start crawler '{}': {}".format(crawler_name, str(e)))
         raise
@@ -193,8 +190,7 @@ def run_crawler(glue_client, crawler_name: str, glue_database: str, s3_path: str
     elapsed  = 0
     while elapsed < max_wait:
         try:
-            response = glue_client.get_crawler(Name=crawler_name)
-            state = response["Crawler"]["State"]
+            state = glue_client.get_crawler(Name=crawler_name)["Crawler"]["State"]
             logger.info("Crawler '{}' state: {} | Elapsed: {}s".format(crawler_name, state, elapsed))
             if state == "READY":
                 logger.info("Crawler completed successfully: {}".format(crawler_name))
@@ -265,7 +261,8 @@ def main():
 
     logger.info("Found {} mapping(s) for job: {}".format(len(mappings), job_name))
 
-    failed = []
+    failed       = []
+    crawler_info = None
 
     for row in mappings:
         (
@@ -304,10 +301,9 @@ def main():
             logger.info("Completed mapping_id: {} | {}.{} | Rows written: {}".format(
                 mapping_id, source_schema_name, source_entity_name, row_count))
 
+            # Track crawler details for post-load run
             if run_crawler_flag == 1:
-                run_crawler(glue_client, crawler_name, glue_database_name, s3_path, crawler_role)
-            else:
-                logger.info("Crawler skipped for mapping_id: {} (run_crawler=0)".format(mapping_id))
+                crawler_info = (crawler_name, glue_database_name, s3_path)
 
         except Exception:
             error = traceback.format_exc()
@@ -320,6 +316,17 @@ def main():
 
     if failed:
         raise Exception("Job '{}' completed with failures: {}".format(job_name, ", ".join(failed)))
+
+    # Run crawler once after all tables loaded
+    if crawler_info:
+        c_name, c_database, c_path = crawler_info
+        # Use parent S3 path so crawler covers all tables
+        parent_path = "s3://{bucket}/{prefix}/".format(
+            bucket=dest_s3_bucket,
+            prefix=dest_s3_prefix.rstrip("/") + "/" + dataset_name
+        )
+        logger.info("Running crawler once for all tables: {} | Path: {}".format(c_name, parent_path))
+        run_crawler(glue_client, c_name, c_database, parent_path, crawler_role)
 
     logger.info("Job completed successfully: {}".format(job_name))
 
