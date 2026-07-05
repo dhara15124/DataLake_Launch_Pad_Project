@@ -65,7 +65,9 @@ def get_metadata_connection(secret_client, metadata_secret_name: str):
 def get_job_step_mappings(metadata_conn, job_name: str) -> list:
     cursor = metadata_conn.cursor()
     cursor.callproc("sp_get_job_step_mappings", [job_name])
-    rows = cursor.fetchall()
+    rows = []
+    for result in cursor.stored_results():
+        rows = result.fetchall()
     cursor.close()
     return rows
 
@@ -128,17 +130,19 @@ def run_crawler(glue_client, crawler_name: str, glue_database: str, s3_path: str
     glue_client.start_crawler(Name=crawler_name)
     logger.info("Started crawler: {}".format(crawler_name))
 
-    while True:
+    max_wait = 600  # 10 minutes
+    elapsed  = 0
+    while elapsed < max_wait:
         response = glue_client.get_crawler(Name=crawler_name)
         state = response["Crawler"]["State"]
         if state == "READY":
             logger.info("Crawler completed: {}".format(crawler_name))
-            break
-        elif state in ["RUNNING", "STOPPING", "STARTING"]:
-            logger.info("Crawler state: {} — waiting...".format(state))
-            time.sleep(30)
-        else:
-            raise Exception("Crawler failed with state: {}".format(state))
+            return
+        logger.info("Crawler state: {} — waiting...".format(state))
+        time.sleep(30)
+        elapsed += 30
+
+    raise Exception("Crawler timed out after {}s: {}".format(max_wait, crawler_name))
 
 
 # -------------------------------------------------------
