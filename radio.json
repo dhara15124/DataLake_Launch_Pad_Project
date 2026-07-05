@@ -1,0 +1,8 @@
+{
+  "dataset_name": "radio",
+  "database_name": "radio_db",
+  "schema_name": "radio_db",
+  "tables": [
+    "radio_content"
+  ]
+}
