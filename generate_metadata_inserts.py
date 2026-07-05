@@ -1,7 +1,11 @@
 """
 generate_metadata_inserts.py
 
-Input event (4 fields only):
+Triggered by S3 event when a JSON file is placed under inputs/ in aps-group-cfn-bucket.
+Reads the input JSON from S3, generates INSERT SQL, saves SQL back to S3 outputs/,
+and executes it against the metadata RDS MySQL database.
+
+Input JSON (4 fields only):
 {
     "dataset_name":  "media",
     "database_name": "media_db",
@@ -10,45 +14,49 @@ Input event (4 fields only):
 }
 """
 
-S3_BUCKET       = "ingestion-rawzone-group"
-CONNECTION_TYPE = "rds_mysql"
+import json
+import os
+import boto3
+import pymysql
+
+S3_BUCKET         = "ingestion-rawzone-group"
+CONNECTION_TYPE   = "rds_mysql"
+CFN_BUCKET        = "aps-group-cfn-bucket"
+METADATA_SECRET   = "metadata"
+METADATA_DATABASE = "datalake_metadata"
 
 
-def lambda_handler(event, context):
-    dataset_name  = event["dataset_name"]
-    database_name = event["database_name"]
-    schema_name   = event["schema_name"]
-    tables        = event["tables"]
+def get_secret(secret_name: str) -> dict:
+    client = boto3.client("secretsmanager")
+    response = client.get_secret_value(SecretId=secret_name)
+    return json.loads(response["SecretString"])
 
+
+def build_sql(dataset_name, database_name, schema_name, tables) -> str:
     secret_key_name = f"{dataset_name}-secret"
     job_name        = f"{dataset_name.title()} MySQL Ingestion Job"
     job_description = f"Ingests {dataset_name} tables from MySQL RDS to S3 LandingZone"
 
-    # Reusable SELECT subqueries for FK lookups
-    dataset_id_sel  = f"(SELECT dataset_id  FROM dataset         WHERE dataset_name   = '{dataset_name}')"
-    database_id_sel = f"(SELECT database_id FROM dataset_database WHERE database_name  = '{database_name}')"
-    schema_id_sel   = f"(SELECT schema_id   FROM dataset_schema  WHERE schema_name    = '{schema_name}')"
-    job_id_sel      = f"(SELECT job_id      FROM job             WHERE job_name       = '{job_name}')"
-    job_step_id_sel = f"(SELECT job_step_id FROM job_step        WHERE job_id = {job_id_sel} AND step_sequence = 1)"
+    dataset_id_sel  = f"(SELECT dataset_id  FROM dataset          WHERE dataset_name  = '{dataset_name}')"
+    database_id_sel = f"(SELECT database_id FROM dataset_database WHERE database_name = '{database_name}')"
+    schema_id_sel   = f"(SELECT schema_id   FROM dataset_schema   WHERE schema_name   = '{schema_name}')"
+    job_id_sel      = f"(SELECT job_id      FROM job              WHERE job_name      = '{job_name}')"
+    job_step_id_sel = f"(SELECT job_step_id FROM job_step         WHERE job_id = {job_id_sel} AND step_sequence = 1)"
 
     lines = []
 
-    # -- dataset
     lines.append("-- dataset")
     lines.append("INSERT INTO dataset (dataset_name, dataset_description) VALUES")
     lines.append(f"('{dataset_name}', '{dataset_name.title()} source system');\n")
 
-    # -- dataset_database
     lines.append("-- dataset_database")
     lines.append("INSERT INTO dataset_database (dataset_id, database_name, connection_type, secret_key_name) VALUES")
     lines.append(f"({dataset_id_sel}, '{database_name}', '{CONNECTION_TYPE}', '{secret_key_name}');\n")
 
-    # -- dataset_schema
     lines.append("-- dataset_schema")
     lines.append("INSERT INTO dataset_schema (database_id, schema_name) VALUES")
     lines.append(f"({database_id_sel}, '{schema_name}');\n")
 
-    # -- dataset_entity (source rows first, then dest rows)
     lines.append("-- dataset_entity")
     entity_rows = []
     for table in tables:
@@ -58,17 +66,14 @@ def lambda_handler(event, context):
     lines.append("INSERT INTO dataset_entity (schema_id, entity_name, entity_description, s3_bucket, s3_prefix) VALUES")
     lines.append(",\n".join(entity_rows) + ";\n")
 
-    # -- job
     lines.append("-- job")
     lines.append("INSERT INTO job (job_name, job_description) VALUES")
     lines.append(f"('{job_name}', '{job_description}');\n")
 
-    # -- job_step
     lines.append("-- job_step")
     lines.append("INSERT INTO job_step (job_id, step_sequence, step_name, source_connection_type, dest_connection_type, run_crawler, continue_on_error) VALUES")
     lines.append(f"({job_id_sel}, 1, 'MySQL to LandingZone', '{CONNECTION_TYPE}', 's3_parquet', 0, 1);\n")
 
-    # -- source_to_destination_mapping
     lines.append("-- source_to_destination_mapping")
     mapping_rows = []
     for table in tables:
@@ -78,7 +83,67 @@ def lambda_handler(event, context):
     lines.append("INSERT INTO source_to_destination_mapping (job_step_id, source_entity_id, dest_entity_id) VALUES")
     lines.append(",\n".join(mapping_rows) + ";")
 
+    return "\n".join(lines)
+
+
+def save_sql_to_s3(sql: str, input_key: str):
+    s3 = boto3.client("s3")
+    filename    = os.path.basename(input_key).replace(".json", ".sql")
+    output_key  = f"outputs/{filename}"
+    s3.put_object(Bucket=CFN_BUCKET, Key=output_key, Body=sql.encode("utf-8"))
+    return output_key
+
+
+def execute_sql(sql: str):
+    creds = get_secret(METADATA_SECRET)
+    conn  = pymysql.connect(
+        host=creds["host"],
+        port=int(creds["port"]),
+        user=creds["username"],
+        password=creds["password"],
+        database=METADATA_DATABASE,
+        autocommit=False
+    )
+    try:
+        cursor = conn.cursor()
+        for statement in sql.split(";"):
+            stmt = statement.strip()
+            if stmt and not stmt.startswith("--"):
+                cursor.execute(stmt)
+        conn.commit()
+        cursor.close()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def lambda_handler(event, context):
+    s3 = boto3.client("s3")
+
+    # Support both EventBridge S3 event and direct invocation with s3_key
+    if "detail" in event:
+        bucket = event["detail"]["bucket"]["name"]
+        key    = event["detail"]["object"]["key"]
+    else:
+        bucket = CFN_BUCKET
+        key    = event["s3_key"]
+
+    response    = s3.get_object(Bucket=bucket, Key=key)
+    input_data  = json.loads(response["Body"].read())
+
+    dataset_name  = input_data["dataset_name"]
+    database_name = input_data["database_name"]
+    schema_name   = input_data["schema_name"]
+    tables        = input_data["tables"]
+
+    sql        = build_sql(dataset_name, database_name, schema_name, tables)
+    output_key = save_sql_to_s3(sql, key)
+    execute_sql(sql)
+
     return {
         "statusCode": 200,
-        "body": "\n".join(lines)
+        "output_s3_key": output_key,
+        "message": f"SQL executed and saved to s3://{CFN_BUCKET}/{output_key}"
     }
