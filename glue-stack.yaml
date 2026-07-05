@@ -4,12 +4,12 @@ Resources:
   RawzoneBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub '${AWS::StackName}-rawzone-bucket'
+      BucketName: !Sub ${AWS::StackName}-rawzone-bucket
 
   GlueJobRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${AWS::StackName}-glue-role'
+      RoleName: !Sub ${AWS::StackName}-glue-role
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -25,7 +25,7 @@ Resources:
   IngestionJob:
     Type: AWS::Glue::Job
     Properties:
-      Name: !Sub '${AWS::StackName}-glue-job'
+      Name: !Sub ${AWS::StackName}-glue-job
       Role: !GetAtt GlueJobRole.Arn
       Command:
         Name: glueetl
@@ -35,8 +35,8 @@ Resources:
       NumberOfWorkers: 2
       WorkerType: G.1X
       DefaultArguments:
-        '--job_name': 'Media MySQL Ingestion Job'
-        '--metadata_secret_name': 'media-metadata-secret'
+        '--job_name': Media MySQL Ingestion Job
+        '--metadata_secret_name': media-metadata-secret
         '--crawler_role': !GetAtt GlueJobRole.Arn
         '--region': !Ref AWS::Region
         '--additional-python-modules': pymysql
@@ -49,8 +49,8 @@ Resources:
       Actions:
         - JobName: !Ref IngestionJob
           Arguments:
-            '--job_name': 'Media MySQL Ingestion Job'
-            '--metadata_secret_name': 'metadata'
+            '--job_name': Media MySQL Ingestion Job
+            '--metadata_secret_name': metadata
             '--crawler_role': !GetAtt GlueJobRole.Arn
             '--region': !Ref AWS::Region
 
@@ -59,41 +59,53 @@ Resources:
     Properties:
       Name: media-ingestion-scheduled-trigger
       Type: SCHEDULED
-      Schedule: 'cron(0 2 * * ? *)'
+      Schedule: cron(0 2 * * ? *)
       StartOnCreation: true
       Actions:
         - JobName: !Ref IngestionJob
           Arguments:
-            '--job_name': 'Media MySQL Ingestion Job'
-            '--metadata_secret_name': 'metadata'
+            '--job_name': Media MySQL Ingestion Job
+            '--metadata_secret_name': metadata
             '--crawler_role': !GetAtt GlueJobRole.Arn
             '--region': !Ref AWS::Region
   GenerateMetadataInsertsRole:
-   Type: AWS::IAM::Role
-   Properties:
-    RoleName: !Sub "${AWS::StackName}-generate-metadata-role"
-    AssumeRolePolicyDocument:
-      Version: "2012-10-17"
-      Statement:
-        - Effect: Allow
-          Principal:
-            Service: lambda.amazonaws.com
-          Action: sts:AssumeRole
-    ManagedPolicyArns:
-      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      - arn:aws:iam::aws:policy/AdministratorAccess
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-generate-metadata-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AdministratorAccess
+  PyMySQLLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: pymysql-layer
+      Description: PyMySQL library
+      CompatibleRuntimes:
+        - python3.12
+      Content:
+        S3Bucket: aps-group-cfn-bucket
+        S3Key: layers/pymysql.zip
   GenerateMetadataInsertsFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: !Sub '${AWS::StackName}-generate-metadata-inserts'
+      FunctionName: !Sub ${AWS::StackName}-generate-metadata-inserts
       Description: Generates metadata INSERT SQL statements from dataset/table inputs
       Runtime: python3.12
       Handler: generate_metadata_inserts.lambda_handler
       Role: !GetAtt GenerateMetadataInsertsRole.Arn
       Timeout: 30
       MemorySize: 128
+      Layers: 
+        - !Ref PyMySQLLayer
       Code:
-        S3Bucket: 'aps-group-cfn-bucket'
+        S3Bucket: aps-group-cfn-bucket
         S3Key: scripts/generate_metadata_inserts.zip
 
   # EventBridge rule: fires when a file is placed under inputs/ in aps-group-cfn-bucket
@@ -104,8 +116,9 @@ Resources:
   MetadataInputS3EventRule:
     Type: AWS::Events::Rule
     Properties:
-      Name: !Sub '${AWS::StackName}-metadata-input-s3-rule'
-      Description: Triggers GenerateMetadataInsertsFunction when a file lands in s3://aps-group-cfn-bucket/inputs/
+      Name: !Sub ${AWS::StackName}-metadata-input-s3-rule
+      Description: Triggers GenerateMetadataInsertsFunction when a file lands in
+        s3://aps-group-cfn-bucket/inputs/
       EventPattern:
         source:
           - aws.s3
