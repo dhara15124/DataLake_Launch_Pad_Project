@@ -29,7 +29,7 @@ Resources:
       Role: !GetAtt GlueJobRole.Arn
       Command:
         Name: glueetl
-        ScriptLocation: !Sub s3://${SourceBucket}/gluejob/ingestion.py
+        ScriptLocation: s3://aps-group-cfn-bucket/gluejob/ingestion.py
         PythonVersion: '3'
       GlueVersion: '4.0'
       NumberOfWorkers: 2
@@ -39,7 +39,7 @@ Resources:
         '--metadata_secret_name': 'media-metadata-secret'
         '--crawler_role': !GetAtt GlueJobRole.Arn
         '--region': !Ref AWS::Region
-        '--extra-py-files': s3://aps-group-rawzone-bucket/scripts/modules.zip
+        '--additional-python-modules': pymysql
 
   MediaIngestionOnDemandTrigger:
     Type: AWS::Glue::Trigger
