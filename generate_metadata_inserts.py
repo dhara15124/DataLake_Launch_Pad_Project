@@ -18,6 +18,7 @@ import json
 import os
 import boto3
 import pymysql
+import urllib.parse
 
 S3_BUCKET         = "ingestion-rawzone-group"
 CONNECTION_TYPE   = "rds_mysql"
@@ -79,7 +80,8 @@ def build_sql(dataset_name, database_name, schema_name, tables) -> str:
     for table in tables:
         src_sel  = f"(SELECT entity_id FROM dataset_entity WHERE schema_id = {schema_id_sel} AND entity_name = '{table}' AND s3_bucket IS NULL)"
         dest_sel = f"(SELECT entity_id FROM dataset_entity WHERE schema_id = {schema_id_sel} AND entity_name = '{table}' AND s3_bucket IS NOT NULL)"
-        mapping_rows.append(f"({job_step_id_sel}, {src_sel}, {dest_sel})   -- {table} MySQL → {table} LandingZone")
+        mapping_rows.append(f"({job_step_id_sel}, {src_sel}, {dest_sel})")
+        #mapping_rows.append(f"({job_step_id_sel}, {src_sel}, {dest_sel})   -- {table} MySQL → {table} LandingZone")
     lines.append("INSERT INTO source_to_destination_mapping (job_step_id, source_entity_id, dest_entity_id) VALUES")
     lines.append(",\n".join(mapping_rows) + ";")
 
@@ -104,18 +106,43 @@ def execute_sql(sql: str):
         database=METADATA_DATABASE,
         autocommit=False
     )
+    print("connected to db")
     try:
         cursor = conn.cursor()
-        for statement in sql.split(";"):
+
+        # Remove SQL comment lines
+        clean_sql = "\n".join(
+            line for line in sql.splitlines()
+            if not line.strip().startswith("--")
+        )
+
+        for i, statement in enumerate(clean_sql.split(";"), start=1):
             stmt = statement.strip()
-            if stmt and not stmt.startswith("--"):
-                cursor.execute(stmt)
+
+            if stmt:
+                print("=" * 80)
+                print(f"Executing Statement {i}")
+                print(stmt)
+                print("=" * 80)
+
+                rows = cursor.execute(stmt)
+
+                print(f"Rows affected: {rows}")
+                print(f"Statement {i} executed successfully.\n")
+
         conn.commit()
+        print("Transaction committed successfully.")
+
         cursor.close()
-    except Exception:
+
+    except Exception as e:
+        print(f"Database execution failed: {str(e)}")
+        print("Rolling back transaction...")
         conn.rollback()
         raise
+
     finally:
+        print("Closing database connection.")
         conn.close()
 
 
@@ -123,15 +150,13 @@ def lambda_handler(event, context):
     s3 = boto3.client("s3")
 
     # Support both EventBridge S3 event and direct invocation with s3_key
-    if "detail" in event:
-        bucket = event["detail"]["bucket"]["name"]
-        key    = event["detail"]["object"]["key"]
-    else:
-        bucket = CFN_BUCKET
-        key    = event["s3_key"]
+    record = event["Records"][0]
+    bucket = record["s3"]["bucket"]["name"]
+    key = urllib.parse.unquote_plus(record["s3"]["object"]["key"],encoding="utf-8")
 
     response    = s3.get_object(Bucket=bucket, Key=key)
     input_data  = json.loads(response["Body"].read())
+    print(json.dumps(input_data, indent=2, default=str))
 
     dataset_name  = input_data["dataset_name"]
     database_name = input_data["database_name"]
@@ -140,6 +165,7 @@ def lambda_handler(event, context):
 
     sql        = build_sql(dataset_name, database_name, schema_name, tables)
     output_key = save_sql_to_s3(sql, key)
+    print(f"SQL saved to s3://{CFN_BUCKET}/{output_key}")
     execute_sql(sql)
 
     return {
