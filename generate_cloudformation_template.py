@@ -25,6 +25,7 @@ GLUE_ROLE_ARN   = "arn:aws:iam::216812304371:role/ingestion-glue-role"
 # reuse clients across invocations
 s3_client  = boto3.client("s3")
 cfn_client = boto3.client("cloudformation")
+REGION     = boto3.session.Session().region_name
 
 
 def sanitize(value: str) -> str:
@@ -70,7 +71,7 @@ def build_template(dataset_name: str, job_name: str) -> dict:
                     "DefaultArguments": {
                         "--job_name": job_name,
                         "--metadata_secret_name": "metadata",
-                        "--region": {"Ref": "AWS::Region"},
+                        "--region": REGION,
                         "--additional-python-modules": "pymysql"
                     }
                 }
@@ -96,7 +97,7 @@ def build_template(dataset_name: str, job_name: str) -> dict:
                             "Arguments": {
                                 "--job_name": job_name,
                                 "--metadata_secret_name": "metadata",
-                                "--region": {"Ref": "AWS::Region"}
+                                "--region": REGION
                             }
                         }
                     ]
