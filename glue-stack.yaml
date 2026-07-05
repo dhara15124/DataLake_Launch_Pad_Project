@@ -79,7 +79,7 @@ Resources:
       Timeout: 30
       MemorySize: 128
       Code:
-        S3Bucket: !Sub '${AWS::StackName}-source-bucket'
+        S3Bucket: 'aps-group-cfn-bucket'
         S3Key: scripts/generate_metadata_inserts.zip
 
   GenerateMetadataInsertsFunctionLogGroup:
