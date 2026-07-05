@@ -176,3 +176,25 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: events.amazonaws.com
       SourceArn: !GetAtt MetadataInputS3EventRule.Arn
+  GenerateCloudformationTemplateFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-generate-cloudformation-template
+      Description: Generates Cloudformation Template
+      Runtime: python3.12
+      Handler: generate_cloudformation_template.lambda_handler
+      Role: !GetAtt GenerateMetadataInsertsRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Layers: 
+        - !Ref PyMySQLLayer
+      VpcConfig:
+       SecurityGroupIds:
+        - !GetAtt LambdaSecurityGroup.GroupId
+       SubnetIds: 
+        - subnet-069d2faac0cabe50e
+        - subnet-07609559c424fd07b
+        - subnet-03ba5ce80e0053633
+      Code:
+        S3Bucket: aps-group-cfn-bucket
+        S3Key: scripts/generate_cloudformation_template.zip
