@@ -210,7 +210,7 @@ def grant_table_permissions(lf_client, database_name: str, table_name: str, iam_
     logger.info("Granting LakeFormation permissions on {}.{} to {}".format(database_name, table_name, iam_user_arn))
     try:
         lf_client.grant_permissions(
-            Principal={"DataLakePrincipal": {"DataLakePrincipalIdentifier": iam_user_arn}},
+            Principal= {"DataLakePrincipalIdentifier": 'arn:aws:iam::216812304371:user/Dhara'},
             Resource={"Table": {"DatabaseName": database_name, "Name": table_name}},
             Permissions=["SELECT", "DESCRIBE"],
             PermissionsWithGrantOption=[]
@@ -311,12 +311,12 @@ def main():
             mapping_id, source_schema_name, source_entity_name, s3_path))
 
         try:
-            row_count = extract_and_load(
-                spark, secret_client, source_secret_key_name, source_database_name,
-                source_schema_name, source_entity_name, s3_path
-            )
-            logger.info("Completed mapping_id: {} | {}.{} | Rows written: {}".format(
-                mapping_id, source_schema_name, source_entity_name, row_count))
+            #row_count = extract_and_load(
+                #spark, secret_client, source_secret_key_name, source_database_name,
+                #source_schema_name, source_entity_name, s3_path
+            #)
+            #logger.info("Completed mapping_id: {} | {}.{} | Rows written: {}".format(
+                #mapping_id, source_schema_name, source_entity_name, row_count))
 
             if run_crawler_flag == 1:
                 run_crawler(glue_client, crawler_name, glue_database_name, s3_path, crawler_role)
@@ -325,7 +325,7 @@ def main():
 
             grant_table_permissions(
                 lf_client, glue_database_name, source_entity_name,
-                "arn:aws:iam::<ACCOUNT_ID>:user/Dhara"
+                "arn:aws:iam::216812304371:user/Dhara"
             )
 
         except Exception:
