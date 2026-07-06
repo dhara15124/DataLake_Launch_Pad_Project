@@ -204,7 +204,25 @@ def run_crawler(glue_client, crawler_name: str, glue_database: str, s3_path: str
 
 
 # -------------------------------------------------------
-# 6. Main
+# 6. Grant Lake Formation permissions on table
+# -------------------------------------------------------
+def grant_table_permissions(lf_client, database_name: str, table_name: str, iam_user_arn: str):
+    logger.info("Granting LakeFormation permissions on {}.{} to {}".format(database_name, table_name, iam_user_arn))
+    try:
+        lf_client.grant_permissions(
+            Principal={"DataLakePrincipal": {"DataLakePrincipalIdentifier": iam_user_arn}},
+            Resource={"Table": {"DatabaseName": database_name, "Name": table_name}},
+            Permissions=["SELECT", "DESCRIBE"],
+            PermissionsWithGrantOption=[]
+        )
+        logger.info("Granted permissions on {}.{} to {}".format(database_name, table_name, iam_user_arn))
+    except Exception as e:
+        logger.error("Failed to grant LakeFormation permissions: {}".format(str(e)))
+        raise
+
+
+# -------------------------------------------------------
+# 7. Main
 # -------------------------------------------------------
 def main():
     logger.info("Initialising Glue job...")
@@ -236,8 +254,9 @@ def main():
         logger.error("Failed to initialise SparkContext: {}".format(str(e)))
         raise
 
-    secret_client = boto3.client("secretsmanager", region_name=region)
-    glue_client   = boto3.client("glue",           region_name=region)
+    secret_client = boto3.client("secretsmanager",  region_name=region)
+    glue_client   = boto3.client("glue",            region_name=region)
+    lf_client     = boto3.client("lakeformation",   region_name=region)
 
     logger.info("Job started: {}".format(job_name))
 
@@ -303,6 +322,11 @@ def main():
                 run_crawler(glue_client, crawler_name, glue_database_name, s3_path, crawler_role)
             else:
                 logger.info("Crawler skipped for mapping_id: {} (run_crawler=0)".format(mapping_id))
+
+            grant_table_permissions(
+                lf_client, glue_database_name, source_entity_name,
+                "arn:aws:iam::<ACCOUNT_ID>:user/Dhara"
+            )
 
         except Exception:
             error = traceback.format_exc()
