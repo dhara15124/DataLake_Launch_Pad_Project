@@ -20,7 +20,7 @@ import boto3
 import pymysql
 import urllib.parse
 
-S3_BUCKET         = "ingestion-rawzone-group"
+S3_BUCKET         = "ingestion-rawzone-bucket"
 CONNECTION_TYPE   = "rds_mysql"
 CFN_BUCKET        = "aps-group-cfn-bucket"
 METADATA_SECRET   = "metadata"
