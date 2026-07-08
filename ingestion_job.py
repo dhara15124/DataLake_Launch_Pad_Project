@@ -1,5 +1,4 @@
 """
-media_ingestion_job.py
 
 AWS Glue Job Entry Point.
 
@@ -28,7 +27,7 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 # Logging setup
 # -------------------------------------------------------
 logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-logger = logging.getLogger("media_ingestion_job")
+logger = logging.getLogger("ingestion_job")
 logger.setLevel(logging.INFO)
 
 
@@ -311,12 +310,12 @@ def main():
             mapping_id, source_schema_name, source_entity_name, s3_path))
 
         try:
-            row_count = extract_and_load(
-                spark, secret_client, source_secret_key_name, source_database_name,
-                source_schema_name, source_entity_name, s3_path
-            )
-            logger.info("Completed mapping_id: {} | {}.{} | Rows written: {}".format(
-                mapping_id, source_schema_name, source_entity_name, row_count))
+            #row_count = extract_and_load(
+                #spark, secret_client, source_secret_key_name, source_database_name,
+                #source_schema_name, source_entity_name, s3_path
+            #)
+            #logger.info("Completed mapping_id: {} | {}.{} | Rows written: {}".format(
+                #mapping_id, source_schema_name, source_entity_name, row_count))
 
             if run_crawler_flag == 1:
                 run_crawler(glue_client, crawler_name, glue_database_name, s3_path, crawler_role)
