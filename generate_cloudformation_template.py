@@ -19,7 +19,7 @@ logger.setLevel(logging.INFO)
 
 CFN_BUCKET      = "aps-group-cfn-bucket"
 CFN_PREFIX      = "cloudformation"
-GLUE_SCRIPT_LOC = "s3://aps-group-rawzone-bucket/scripts/ingestion.py"
+GLUE_SCRIPT_LOC = "s3://aps-group-cfn-bucket/gluejob/ingestion.py"
 GLUE_ROLE_ARN   = "arn:aws:iam::216812304371:role/ingestion-glue-role"
 
 # reuse clients across invocations
@@ -125,6 +125,7 @@ def save_template_to_s3(template: dict, dataset_name: str) -> str:
 
 def deploy_stack(dataset_name: str, template_s3_key: str):
     stack_name   = f"{dataset_name}-ingestion-stack"
+    stack_name = stack_name.replace("_", "-")
     template_url = f"https://{CFN_BUCKET}.s3.amazonaws.com/{template_s3_key}"
 
     try:
